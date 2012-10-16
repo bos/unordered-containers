@@ -230,7 +230,7 @@ member k m = case lookup k m of
 lookup :: (Eq k, Hashable k) => k -> HashMap k v -> Maybe v
 lookup k0 = go h0 k0 0
   where
-    h0 = hash k0
+    !h0 = hash k0
     go !_ !_ !_ Empty = Nothing
     go h k _ (Leaf hx (L kx x))
         | h == hx && k == kx = Just x  -- TODO: Split test in two
