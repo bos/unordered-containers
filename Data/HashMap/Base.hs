@@ -174,17 +174,33 @@ instance (Eq k, Eq v) => Eq (HashMap k v) where
     (==) = equal
 
 equal :: (Eq k, Eq v) => HashMap k v -> HashMap k v -> Bool
-equal (BitmapIndexed b1 ary1) (BitmapIndexed b2 ary2) =
-    b1 == b2 && A.toList ary1 == A.toList ary2
-equal (Leaf k1 v1) (Leaf k2 v2) =
-    k1 == k2 && v1 == v2
-equal (Full ary1) (Full ary2) =
-    A.toList ary1 == A.toList ary2
-equal (Collision k1 ary1) (Collision k2 ary2) =
-    k1 == k2 && A.length ary1 == A.length ary2
-      && L.null (A.toList ary1 L.\\ A.toList ary2)
-equal Empty Empty = True
-equal _     _     = False
+equal t1 t2 = go (toList' t1 []) (toList' t2 [])
+  where
+    -- If the two trees are the same, then their lists of 'Leaf's and
+    -- 'Collision's read from left to right should be the same (modulo the
+    -- order of elements in 'Collision').
+
+    go (Leaf k1 l1 : tl1) (Leaf k2 l2 : tl2)
+      | k1 == k2 && l1 == l2
+      = go tl1 tl2
+    go (Collision k1 ary1 : tl1) (Collision k2 ary2 : tl2)
+      | k1 == k2 && A.length ary1 == A.length ary2 &&
+        L.null (A.toList ary1 L.\\ A.toList ary2)
+      = go tl1 tl2
+    go [] [] = True
+    go _  _  = False
+
+    toList' (BitmapIndexed _ ary) a = A.foldr toList' a ary
+    toList' (Full ary)            a = A.foldr toList' a ary
+    toList' l@(Leaf _ _)          a = l : a
+    toList' c@(Collision _ _)     a = c : a
+    toList' Empty                 a = a
+
+-- Helper function to detect 'Leaf's and 'Collision's.
+isLeafOrCollision :: HashMap k v -> Bool
+isLeafOrCollision (Leaf _ _)      = True
+isLeafOrCollision (Collision _ _) = True
+isLeafOrCollision _               = False
 
 ------------------------------------------------------------------------
 -- * Construction
@@ -479,7 +495,15 @@ delete k0 m0 = go h0 k0 0 m0
                 then t
                 else case st' of
                 Empty | A.length ary == 1 -> Empty
-                      | otherwise -> BitmapIndexed (b .&. complement m) (A.delete ary i)
+                      | A.length ary == 2 ->
+                          case (i, A.index ary 0, A.index ary 1) of
+                          (0, _, l) | isLeafOrCollision l -> l
+                          (1, l, _) | isLeafOrCollision l -> l
+                          _                               -> bIndexed
+                      | otherwise -> bIndexed
+                    where
+                      bIndexed = BitmapIndexed (b .&. complement m) (A.delete ary i)
+                l | isLeafOrCollision l && A.length ary == 1 -> l
                 _ -> BitmapIndexed b (A.update ary i st')
       where m = mask h s
             i = sparseIndex b m
@@ -677,15 +701,19 @@ unions = L.foldl' union empty
 -- * Transformations
 
 -- | /O(n)/ Transform this map by applying a function to every value.
-map :: (v1 -> v2) -> HashMap k v1 -> HashMap k v2
-map f = go
+mapWithKey :: (k -> v1 -> v2) -> HashMap k v1 -> HashMap k v2
+mapWithKey f = go
   where
     go Empty = Empty
-    go (Leaf h (L k v)) = Leaf h $ L k (f v)
+    go (Leaf h (L k v)) = Leaf h $ L k (f k v)
     go (BitmapIndexed b ary) = BitmapIndexed b $ A.map' go ary
     go (Full ary) = Full $ A.map' go ary
     go (Collision h ary) = Collision h $
-                           A.map' (\ (L k v) -> L k (f v)) ary
+                           A.map' (\ (L k v) -> L k (f k v)) ary
+{-# INLINE mapWithKey #-}
+
+map :: (v1 -> v2) -> HashMap k v1 -> HashMap k v2
+map f = mapWithKey (const f)
 {-# INLINE map #-}
 
 -- TODO: We should be able to use mutation to create the new
@@ -826,6 +854,11 @@ filterWithKey pred = go
         step !ary !mary !b i !j !bi n
             | i >= n = case j of
                 0 -> return Empty
+                1 -> do
+                    ch <- A.read mary 0
+                    case ch of
+                      t | isLeafOrCollision t -> return t
+                      _                       -> BitmapIndexed b <$> trim mary 1
                 _ -> do
                     ary2 <- trim mary j
                     return $! if j == maxChildren

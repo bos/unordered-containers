@@ -94,7 +94,6 @@ main = do
 
         , bgroup "HashMap"
         [
-          -- * Basic interface
             bgroup "lookup"
             [ bench "String" $ whnf (lookup keys) hm
             , bench "ByteString" $ whnf (lookup keysBS) hmbs
